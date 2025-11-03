@@ -6,6 +6,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.batch.item.ItemProcessor;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -17,24 +18,38 @@ public class PrometheusLineMetricsProcessor implements ItemProcessor<ConsumerRec
             "(?<name>[a-zA-Z0-9_:]+)(?:\\{(?<labels>[^}]*)\\})?\\s+(?<value>[0-9.eE+-]+)"
     );
 
+    /** Thread-safe Matcher 캐싱 */
+    private static final ThreadLocal<Matcher> MATCHER = ThreadLocal.withInitial(() ->
+            METRIC_PATTERN.matcher("")
+    );
+
+    /** 처리 카운트 (로그 샘플링용) */
+    private static final AtomicLong processedCount = new AtomicLong();
+
     @Override
     public MetricsDocument process(ConsumerRecord<String, String> record) {
-        final String line = record.value() == null ? "" : record.value().trim();
-        if (line.isEmpty()) return null;
+        String line = Optional.ofNullable(record.value()).orElse("").trim();
+        if (line.isEmpty() || line.startsWith("#")) return null; // 주석 및 공백 제외
 
-        Matcher m = METRIC_PATTERN.matcher(line);
-        if (!m.matches()) {
+        Matcher matcher = MATCHER.get().reset(line);
+        if (!matcher.matches()) {
             log.debug("[Processor] Skip (not matched): {}", line);
             return null;
         }
 
-        String name = m.group("name");
-        String labelStr = m.group("labels");
-        String valueStr = m.group("value");
+        String name = matcher.group("name");
+        String labelStr = matcher.group("labels");
+        String valueStr = matcher.group("value");
 
-        Map<String, String> labels = parseLabels(labelStr);
-        double value = Double.parseDouble(valueStr);
+        double value;
+        try {
+            value = Double.parseDouble(valueStr);
+        } catch (NumberFormatException e) {
+            log.warn("[Processor] Invalid numeric value: {}", valueStr);
+            return null;
+        }
 
+        Map<String, String> labels = new TreeMap<>(parseLabels(labelStr)); // 정렬된 라벨
         MetricsDocument doc = MetricsDocument.builder()
                 .metricName(name)
                 .labels(labels)
@@ -42,7 +57,11 @@ public class PrometheusLineMetricsProcessor implements ItemProcessor<ConsumerRec
                 .timestamp(System.currentTimeMillis())
                 .build();
 
-        log.debug("[Processor] Parsed -> {}", doc);
+        long count = processedCount.incrementAndGet();
+        if (count % 1000 == 0) {
+            log.info("[Processor] Processed {} records so far...", count);
+        }
+
         return doc;
     }
 
@@ -54,17 +73,19 @@ public class PrometheusLineMetricsProcessor implements ItemProcessor<ConsumerRec
         Map<String, String> labels = new LinkedHashMap<>();
         if (s == null || s.isEmpty()) return labels;
 
-        // 콤마를 따옴표 밖에서만 분리
         List<String> pairs = splitOutsideQuotes(s, ',');
 
         for (String pair : pairs) {
             int eq = indexOfOutsideQuotes(pair, '=');
             if (eq <= 0) continue;
-
-            String key = pair.substring(0, eq).trim();
-            String rawVal = pair.substring(eq + 1).trim();
-            String val = unquote(rawVal);
-            labels.put(key, val);
+            try {
+                String key = pair.substring(0, eq).trim();
+                String rawVal = pair.substring(eq + 1).trim();
+                String val = unquote(rawVal);
+                labels.put(key, val);
+            } catch (Exception e) {
+                log.debug("[Processor] Label parse skipped: {}", pair);
+            }
         }
         return labels;
     }
@@ -78,8 +99,8 @@ public class PrometheusLineMetricsProcessor implements ItemProcessor<ConsumerRec
             char c = s.charAt(i);
             if (c == '"') {
                 inQuotes = !inQuotes;
-                cur.append(c);
-            } else if (c == sep && !inQuotes) {
+            }
+            if (c == sep && !inQuotes) {
                 out.add(cur.toString().trim());
                 cur.setLength(0);
             } else {

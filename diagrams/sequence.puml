@@ -1,0 +1,27 @@
+@startuml
+title MyMetricServer Data Flow Sequence Diagram
+
+actor "Prometheus Exporter" as exporter
+participant "Kafka Topic" as kafka
+participant "KafkaBatchItemReader" as reader
+participant "PrometheusLineMetricsProcessor" as processor
+participant "KafkaRecordMongoWriter" as writer
+participant "MongoDB (MetricsRepository)" as mongo
+
+exporter -> kafka : publish(metric_line)
+activate kafka
+
+loop Batch Poll Interval (1s)
+    reader -> kafka : poll(ConsumerRecord)
+    kafka --> reader : return record batch (max 100)
+end
+
+reader -> processor : process(record)
+processor --> reader : MetricsDocument
+
+reader -> writer : write(MetricsDocument list)
+writer -> mongo : insertMany(MetricsDocument)
+mongo --> writer : acknowledge
+
+deactivate kafka
+@enduml

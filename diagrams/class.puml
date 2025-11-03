@@ -1,0 +1,67 @@
+@startuml
+title MyMetricServer Class Diagram
+
+package "config" {
+    class BatchConfig {
+        +Job metricsJob()
+        +Step metricsStep()
+        +Step nodeStep()
+    }
+
+    class KafkaConfig {
+        +ConsumerFactory<String, String> consumerFactory
+    }
+
+    class MongoConfig {
+        +MongoTemplate mongoTemplate
+    }
+}
+
+package "consumer" {
+    class KafkaBatchItemReader {
+        -ConsumerFactory<String, String> consumerFactory
+        -String topic
+        +read(): ConsumerRecord
+    }
+
+    class PrometheusLineMetricsProcessor {
+        +process(record): MetricsDocument
+    }
+
+    class KafkaRecordMongoWriter {
+        -MongoTemplate mongoTemplate
+        +write(items: List<MetricsDocument>)
+    }
+
+    class MetricsRepository {
+        +save(MetricsDocument)
+        +findByMetricName(String)
+    }
+}
+
+package "domain" {
+    class MetricsDocument {
+        +metricName: String
+        +value: double
+        +timestamp: long
+        +source: String
+    }
+}
+
+class MyMetricServerApplication
+
+' --- 의존 관계 ---
+MyMetricServerApplication --> BatchConfig
+BatchConfig --> KafkaBatchItemReader
+BatchConfig --> PrometheusLineMetricsProcessor
+BatchConfig --> KafkaRecordMongoWriter
+
+KafkaBatchItemReader --> PrometheusLineMetricsProcessor
+PrometheusLineMetricsProcessor --> MetricsDocument
+KafkaRecordMongoWriter --> MetricsRepository
+MetricsRepository --> MetricsDocument
+
+KafkaConfig --> KafkaBatchItemReader
+MongoConfig --> KafkaRecordMongoWriter
+
+@enduml

@@ -1,0 +1,40 @@
+@startuml
+title MyMetricServer Package Structure
+
+package "backend.mymetricserver" {
+
+  package "config" {
+    class BatchConfig
+    class BatchJobRunner
+    class KafkaConfig
+    class MongoConfig
+  }
+
+  package "consumer" {
+    class KafkaBatchItemReader
+    class KafkaRecordMongoWriter
+    class MetricsRepository
+    class PrometheusLineMetricsProcessor
+  }
+
+  package "domain" {
+    class MetricsDocument
+  }
+
+  class MyMetricServerApplication
+}
+
+' --- 관계선 (선택적) ---
+MyMetricServerApplication --> BatchConfig
+MyMetricServerApplication --> KafkaConfig
+MyMetricServerApplication --> MongoConfig
+
+BatchConfig --> KafkaBatchItemReader
+BatchConfig --> PrometheusLineMetricsProcessor
+BatchConfig --> KafkaRecordMongoWriter
+
+PrometheusLineMetricsProcessor --> MetricsDocument
+KafkaRecordMongoWriter --> MetricsRepository
+MetricsRepository --> MetricsDocument
+
+@enduml

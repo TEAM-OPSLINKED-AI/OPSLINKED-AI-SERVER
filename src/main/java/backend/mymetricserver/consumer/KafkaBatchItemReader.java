@@ -99,50 +99,60 @@ public class KafkaBatchItemReader implements ItemStreamReader<ConsumerRecord<Str
 
     @Override
     public ConsumerRecord<String, String> read() {
-        // 이미 목표 개수만큼 읽었으면 이번 스텝 종료
         if (emittedCount >= maxTotalRecords) {
-            log.info("[Reader] Reached maxTotalRecords={} -> returning null to end step.", maxTotalRecords);
+            log.info("[Reader] Reached maxTotalRecords={} -> committing and returning null.", maxTotalRecords);
+            commitOffsetsSafely();
             return null;
         }
 
-        // 기존 버퍼에 남은 레코드가 있으면 우선 반환
         if (recordIterator != null && recordIterator.hasNext()) {
             emittedCount++;
             return recordIterator.next();
         }
 
-        // 없으면 여러 번 poll 하며 대기
         int emptyPolls = 0;
         while (emptyPolls < maxEmptyPolls) {
-            ConsumerRecords<String, String> records;
             try {
-                records = consumer.poll(pollTimeout);
-            } catch (IllegalStateException e) {
-                // 이미 닫힌 컨슈머에서 poll 호출되는 경우 방지 로그
-                log.warn("[Reader] poll called after consumer closed: {}", e.getMessage());
-                return null;
-            }
+                ConsumerRecords<String, String> records = consumer.poll(pollTimeout);
 
-            if (!records.isEmpty()) {
-                recordIterator = records.iterator();
-                if (recordIterator.hasNext()) {
-                    emittedCount++;
-                    return recordIterator.next();
+                if (!records.isEmpty()) {
+                    recordIterator = records.iterator();
+                    if (recordIterator.hasNext()) {
+                        emittedCount++;
+                        return recordIterator.next();
+                    }
+                } else {
+                    emptyPolls++;
                 }
-            } else {
-                emptyPolls++;
+
+            } catch (org.apache.kafka.common.errors.WakeupException we) {
+                log.warn("[Reader] WakeupException: consumer interrupted.");
+                break;
+            } catch (Exception e) {
+                log.error("[Reader] Poll error: {}", e.getMessage(), e);
+                break;
             }
         }
 
-        // 최대 대기 후에도 없다면 null → 이번 배치 step 종료
-        log.info("[Reader] No records after {} polls (~{} ms). Returning null.",
+        log.info("[Reader] No records after {} polls (~{} ms). Committing offsets & returning null.",
                 maxEmptyPolls, pollTimeout.toMillis() * maxEmptyPolls);
+        commitOffsetsSafely();
         return null;
+    }
+
+    private void commitOffsetsSafely() {
+        try {
+            consumer.commitSync();
+            log.info("[Reader] Offsets committed successfully.");
+        } catch (Exception e) {
+            log.warn("[Reader] Offset commit failed: {}", e.getMessage());
+        }
     }
 
     @Override
     public void close() {
         try {
+            commitOffsetsSafely(); // 종료 전 커밋 보장
             consumer.close();
             log.info("[Reader] KafkaConsumer closed.");
         } catch (Exception e) {
@@ -152,7 +162,8 @@ public class KafkaBatchItemReader implements ItemStreamReader<ConsumerRecord<Str
 
     @Override
     public void update(ExecutionContext executionContext) throws ItemStreamException {
-        // 필요 시 주기적 커밋을 원한다면 여기에서 commitSync() 호출 가능
-        // 현재는 배치 종료 시점에 커밋(Writer/트랜잭션)되도록 놔둡니다.
+        // 일정 주기마다 커밋하고 싶을 때 사용 가능
+        commitOffsetsSafely();
     }
+
 }
