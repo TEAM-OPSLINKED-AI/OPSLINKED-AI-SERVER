@@ -33,6 +33,10 @@ public class BatchConfig {
     private static final String NODE_TOPIC = "node-exporter-metrics";
     private static final String NODE_COLLECTION = "node_metrics";
 
+    private static final String ACTUATOR_TOPIC = "spring-actuator-metrics";
+    private static final String ACTUATOR_COLLECTION = "actuator_metrics";
+
+
     private final ConsumerFactory<String, String> consumerFactory;
     private final MongoTemplate mongoTemplate;
     private final JobBuilderFactory jobBuilderFactory;
@@ -40,11 +44,13 @@ public class BatchConfig {
     private final PlatformTransactionManager transactionManager;
 
     @Bean
-    public Job metricsJob(Step metricsStep, Step nodeStep) { // 변경: nodeStep 추가
+    public Job metricsJob(Step metricsStep, Step nodeStep, Step actuatorStep) {
         return jobBuilderFactory.get("metricsJob")
                 .incrementer(new RunIdIncrementer())
-                .start(metricsStep)   // mysql 먼저
-                .next(nodeStep)       // node 다음
+                .start(metricsStep)
+                .next(nodeStep)
+                .next(actuatorStep)
+                .next(elasticLogStep)
                 .build();
     }
 
@@ -112,4 +118,46 @@ public class BatchConfig {
             mongoTemplate.insert(items, NODE_COLLECTION);
         };
     }
+
+    @Bean
+    public ItemReader<ConsumerRecord<String, String>> actuatorKafkaItemReader() {
+        return new KafkaBatchItemReader(
+                consumerFactory,
+                ACTUATOR_TOPIC,       // spring-actuator-metrics
+                Duration.ofSeconds(1),
+                60,
+                false,
+                200L
+        );
+    }
+
+    @Bean
+    public ItemWriter<MetricsDocument> actuatorMongoWriter() {
+        return items -> {
+            if (items == null || items.isEmpty()) return;
+            mongoTemplate.insert(items, ACTUATOR_COLLECTION);
+        };
+    }
+
+    @Bean
+    public Step actuatorStep() {
+        return stepBuilderFactory.get("actuatorStep")
+                .<ConsumerRecord<String, String>, MetricsDocument>chunk(200)
+                .reader(actuatorKafkaItemReader())
+                .processor(new PrometheusLineMetricsProcessor())
+                .writer(actuatorMongoWriter())
+                .transactionManager(transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step elasticLogStep(RestHighLevelClient client) {
+        return stepBuilderFactory.get("elasticLogStep")
+                .<SearchHit, SearchHit>chunk(300)
+                .reader(new backend.mymetricserver.reader.ElasticsearchItemReader(client, "k8s-log-*"))
+                .writer(new backend.mymetricserver.writer.ElasticMongoWriter(mongoTemplate, "k8s_logs"))
+                .transactionManager(transactionManager)
+                .build();
+    }
+
 }
