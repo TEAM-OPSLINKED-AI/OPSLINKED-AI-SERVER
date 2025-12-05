@@ -5,6 +5,8 @@ import backend.mymetricserver.consumer.PrometheusLineMetricsProcessor;
 import backend.mymetricserver.domain.MetricsDocument;
 import lombok.RequiredArgsConstructor;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.search.SearchHit;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
@@ -44,62 +46,31 @@ public class BatchConfig {
     private final PlatformTransactionManager transactionManager;
 
     @Bean
-    public Job metricsJob(Step metricsStep, Step nodeStep, Step actuatorStep) {
-        return jobBuilderFactory.get("metricsJob")
-                .incrementer(new RunIdIncrementer())
-                .start(metricsStep)
-                .next(nodeStep)
-                .next(actuatorStep)
-                .next(elasticLogStep)
-                .build();
+    public Job metricsJob(Step metricsStep, Step nodeStep, Step actuatorStep, Step elasticLogStep) {
+        return jobBuilderFactory.get("metricsJob").incrementer(new RunIdIncrementer()).start(metricsStep).next(nodeStep).next(actuatorStep).next(elasticLogStep).build();
     }
+
 
     @Bean
     public Step metricsStep() {
-        return stepBuilderFactory.get("metricsStep")
-                .<ConsumerRecord<String, String>, MetricsDocument>chunk(200)
-                .reader(kafkaItemReader())
-                .processor(new PrometheusLineMetricsProcessor())
-                .writer(mongoItemWriter())
-                .transactionManager(transactionManager)
-                .build();
+        return stepBuilderFactory.get("metricsStep").<ConsumerRecord<String, String>, MetricsDocument>chunk(200).reader(kafkaItemReader()).processor(new PrometheusLineMetricsProcessor()).writer(mongoItemWriter()).transactionManager(transactionManager).build();
     }
 
     // 추가: node 스텝
     @Bean
     public Step nodeStep() {
-        return stepBuilderFactory.get("nodeStep")
-                .<ConsumerRecord<String, String>, MetricsDocument>chunk(200)
-                .reader(nodeKafkaItemReader())
-                .processor(new PrometheusLineMetricsProcessor())
-                .writer(nodeMongoItemWriter())
-                .transactionManager(transactionManager)
-                .build();
+        return stepBuilderFactory.get("nodeStep").<ConsumerRecord<String, String>, MetricsDocument>chunk(200).reader(nodeKafkaItemReader()).processor(new PrometheusLineMetricsProcessor()).writer(nodeMongoItemWriter()).transactionManager(transactionManager).build();
     }
 
     @Bean
     public ItemReader<ConsumerRecord<String, String>> kafkaItemReader() {
-        return new KafkaBatchItemReader(
-                consumerFactory,
-                TOPIC,
-                Duration.ofSeconds(1),
-                60,
-                false,
-                100L
-        );
+        return new KafkaBatchItemReader(consumerFactory, TOPIC, Duration.ofSeconds(1), 60, false, 100L);
     }
 
     // 추가: node 리더
     @Bean
     public ItemReader<ConsumerRecord<String, String>> nodeKafkaItemReader() {
-        return new KafkaBatchItemReader(
-                consumerFactory,
-                NODE_TOPIC,
-                Duration.ofSeconds(1),
-                60,
-                false,
-                100L
-        );
+        return new KafkaBatchItemReader(consumerFactory, NODE_TOPIC, Duration.ofSeconds(1), 60, false, 100L);
     }
 
     @Bean
@@ -121,14 +92,8 @@ public class BatchConfig {
 
     @Bean
     public ItemReader<ConsumerRecord<String, String>> actuatorKafkaItemReader() {
-        return new KafkaBatchItemReader(
-                consumerFactory,
-                ACTUATOR_TOPIC,       // spring-actuator-metrics
-                Duration.ofSeconds(1),
-                60,
-                false,
-                200L
-        );
+        return new KafkaBatchItemReader(consumerFactory, ACTUATOR_TOPIC,       // spring-actuator-metrics
+                Duration.ofSeconds(1), 60, false, 200L);
     }
 
     @Bean
@@ -141,23 +106,12 @@ public class BatchConfig {
 
     @Bean
     public Step actuatorStep() {
-        return stepBuilderFactory.get("actuatorStep")
-                .<ConsumerRecord<String, String>, MetricsDocument>chunk(200)
-                .reader(actuatorKafkaItemReader())
-                .processor(new PrometheusLineMetricsProcessor())
-                .writer(actuatorMongoWriter())
-                .transactionManager(transactionManager)
-                .build();
+        return stepBuilderFactory.get("actuatorStep").<ConsumerRecord<String, String>, MetricsDocument>chunk(200).reader(actuatorKafkaItemReader()).processor(new PrometheusLineMetricsProcessor()).writer(actuatorMongoWriter()).transactionManager(transactionManager).build();
     }
 
     @Bean
     public Step elasticLogStep(RestHighLevelClient client) {
-        return stepBuilderFactory.get("elasticLogStep")
-                .<SearchHit, SearchHit>chunk(300)
-                .reader(new backend.mymetricserver.reader.ElasticsearchItemReader(client, "k8s-log-*"))
-                .writer(new backend.mymetricserver.writer.ElasticMongoWriter(mongoTemplate, "k8s_logs"))
-                .transactionManager(transactionManager)
-                .build();
+        return stepBuilderFactory.get("elasticLogStep").<SearchHit, SearchHit>chunk(300).reader(new backend.mymetricserver.reader.ElasticsearchItemReader(client, "k8s-log-*")).writer(new backend.mymetricserver.writer.ElasticMongoWriter(mongoTemplate, "k8s_logs")).transactionManager(transactionManager).build();
     }
 
 }
